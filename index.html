@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IFC WebXR Tour</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/",
+          "three/examples/jsm/utils/BufferGeometryUtils": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/utils/BufferGeometryUtils.js",
+          "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.5.21/build/index.module.js",
+          "web-ifc": "https://cdn.jsdelivr.net/npm/web-ifc@0.0.46/web-ifc-api.js",
+          "web-ifc-three": "https://cdn.jsdelivr.net/npm/web-ifc-three@0.0.126/IFCLoader.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="scene"></canvas>
+
+      <header class="brand"><span class="brand-mark">CZ</span><div><p class="eyebrow">Architektura · Spacer 3D</p><h1>Projekt CZ<span>Dom w nowej perspektywie</span></h1></div></header>
+      <div class="top-actions"><button id="fullscreen" type="button">Pełny ekran</button><button id="home" type="button" disabled>Widok całości</button></div>
+      <section class="intro" id="intro" aria-label="Ładowanie projektu"><p class="eyebrow">Projekt CZ</p><h2>Twoja przestrzeń.<br>Nowa perspektywa.</h2><p id="status" role="status">Przygotowuję scenę…</p><button id="retry" type="button" hidden>Spróbuj ponownie</button></section>
+      <aside class="view-caption"><p class="eyebrow" id="view-number">01 / 04</p><h2 id="view-title">Pierwsze spojrzenie</h2><p id="view-description">Architektura, którą możesz odkrywać.</p></aside>
+      <section class="panel" aria-label="Prezentacja domu">
+        <div class="tour-row"><div><p class="eyebrow">Odkryj projekt</p><p class="tour-subtitle">Bryła. Konstrukcja. Przestrzeń.</p></div><button class="primary" id="tour" type="button" disabled>Poznaj dom <span aria-hidden="true">→</span></button></div>
+        <nav class="view-list" aria-label="Ujęcia domu"><button data-view="0" disabled><span>01</span>Całość</button><button data-view="1" disabled><span>02</span>Otwarcie</button><button data-view="2" disabled><span>03</span>Wnętrze</button><button data-view="3" disabled><span>04</span>Powrót</button></nav>
+        <div id="roof-controls"><button id="roof-toggle" type="button" disabled aria-pressed="false">Otwórz dach</button><label for="roof-progress">Uniesienie dachu</label><input id="roof-progress" type="range" min="0" max="100" value="0" disabled><output id="roof-value" for="roof-progress">0%</output></div>
+        <div class="tour-progress" role="progressbar" aria-label="Postęp prezentacji" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress"></div></div>
+        <div class="panel-footer"><p class="hint">Przeciągnij, aby obrócić · Przewiń, aby przybliżyć</p><span id="tour-state" role="status">Swobodne odkrywanie</span></div>
+      </section>
+      <div id="vr-slot" aria-label="Tryb wirtualnej rzeczywistości"></div>
+    </main>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
