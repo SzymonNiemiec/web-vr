@@ -1,31 +1,24 @@
-# Projekt CZ — prezentacja architektury
+# Projekt CZ — spacer po inwestycji
 
-Interaktywna prezentacja modelu `Projekt CZ.ifc` w Three.js z obsługą WebXR.
+Interaktywna prezentacja konstrukcji z pliku `Projekt CZ.ifc` w Three.js. Uruchom `npm start` i otwórz <http://127.0.0.1:5173>. Biblioteki i parser WASM są pobierane z CDN przy pierwszym otwarciu.
 
-## Uruchomienie
+## Oglądanie konstrukcji
 
-```bash
-npm start
-```
+- Przeciągnij model, aby go obrócić. Kółko myszy lub gest szczypania zmienia przybliżenie.
+- Kliknij element, aby odczytać jego nazwę i numer IFC. Kolory rozróżniają mur, beton konstrukcyjny, strop, dach i fundament Lammi. Kategorie są rozpoznawane po obiektach IFC, również gdy eksport przypisuje ten sam kolor różnym materiałom.
+- Kliknięcie w lico muru podświetla pojedynczy bloczek i pokazuje jego współrzędne w ilustracyjnym układzie spoin oraz numer ściany IFC. Moduł 49 × 24 cm, odcienie i faktury służą prezentacji. Plik opisuje całe ściany.
+- Dach można otwierać suwakiem lub przyciskiem. Dostępne są cztery ujęcia i 48-sekundowy pokaz. Ręczna zmiana widoku zatrzymuje pokaz. Przejścia uwzględniają preferencję ograniczonego ruchu.
 
-Adres: http://127.0.0.1:5173
+## Spacer
 
-## Prezentacja
+„Wejdź do środka” przenosi na parter. WASD służy do chodzenia, strzałki w lewo i prawo obracają widok. Przeciągnięcie obrazu pozwala rozejrzeć się również w pionie. Na ekranie dotykowym przytrzymaj strzałkę ruchu i obracaj widok palcem. Przycisk kondygnacji przenosi na wybrany poziom. Escape lub „Wróć do modelu” kończy spacer.
 
-- Cztery etapy pokazu: całość, rozsunięcie i uniesienie połaci dachu, widok przestrzeni pod dachem oraz ponowne złożenie domu.
-- „Otwórz dach” uruchamia animację niezależnie od pokazu; suwak pozwala ręcznie ustawić uniesienie od 0 do 100%.
-- Dach jest wydzielany z geometrii po identyfikatorach elementów IFC, z zachowaniem materiałów. Model źródłowy pozostaje niezmieniony.
-- „Poznaj dom” uruchamia 48-sekundowy pokaz, po którym kamera wraca do widoku całości.
-- Pokaz zatrzymuje przycisk, Escape, wybór ujęcia, ręczna obsługa kamery lub przełączenie karty.
-- Przeciąganie obraca model; przewijanie przybliża i oddala.
-- „Widok całości” przywraca pierwszy kadr; dostępny jest także pełny ekran.
-- Preferencja ograniczonego ruchu wyłącza animowane przejścia.
-- W zgodnej przeglądarce WebXR dostępny jest tryb VR z zewnętrznymi punktami teleportacji. Nie jest to spacer po wnętrzach. Weryfikacja na fizycznych goglach pozostaje do wykonania.
+Wysokość oczu wynosi 1,62 m. Powierzchnie ruchu są wyznaczane z geometrii płyt. Krawędzie, ściany, słupy i niskie połacie ograniczają dostępny obszar. Eksport przedstawia stan konstrukcyjny budynku.
 
-Ujęcia są zdefiniowane w `frameObject()` w `src/main.js` i dopasowane do rozmiarów modelu oraz ekranu. Przejścia okrążają bryłę zamiast przecinać ją na wprost. `src/roof.js` wydziela połacie dachu. Po otwarciu są rozsunięte i półprzezroczyste, a w ujęciu wnętrza płynnie znikają, aby nie zasłaniać układu; wejście do VR składa dach.
+## WebXR
 
-Biblioteki, parser WASM i font są pobierane z internetu. Przed prezentacją należy sprawdzić połączenie; obecna wersja nie zapewnia pracy offline.
+Przycisk VR pojawia się po wczytaniu modelu w przeglądarce z obsługą immersive-vr. W goglach użytkownik zaczyna na parterze. Spust kontrolera przenosi na widoczną dostępną podłogę wskazaną zielonym promieniem. Przycisk chwytu przełącza parter, piętro i widok zewnętrzny. Wysokość oczu w VR wynika z pozycji gogli. Dostęp z innego urządzenia wymaga HTTPS. Weryfikacja na fizycznym zestawie pozostaje do wykonania.
 
 ## Publikacja
 
-Strona jest publikowana przez GitHub Actions do GitHub Pages po aktualizacji `main`. Publikowane są wyłącznie `index.html`, `src/`, `.nojekyll` i model IFC. Ścieżki zasobów obsługują podkatalog repozytorium.
+GitHub Actions publikuje stronę na GitHub Pages po aktualizacji main. Strona korzysta ze ścieżek względnych i działa także w podkatalogu repozytorium.

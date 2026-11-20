@@ -2,10 +2,8 @@ import * as THREE from 'three';
 
 // IFC exports merge products into one mesh. Partition triangles by expressID,
 // keeping the source material groups and vertex attributes intact.
-export function extractRoof(model, ifcText) {
-  const ids = new Set([...ifcText.matchAll(/^#(\d+)\s*=\s*IFCSLAB\([^\r\n]*\.ROOF\.[^\r\n]*$/gm)].map(match => Number(match[1])));
-  // IFCROOF containers may also carry their own geometry in other exports.
-  for (const match of ifcText.matchAll(/^#(\d+)\s*=\s*IFCROOF\(/gm)) ids.add(Number(match[1]));
+export function extractRoof(model, products) {
+  const ids = new Set([...products.values()].filter(p => p.kind === 'roof').map(p => p.id));
   const source = model.geometry;
   const express = source.getAttribute('expressID');
   if (!express || !source.index || !ids.size) return [];
@@ -48,7 +46,12 @@ export function extractRoof(model, ifcText) {
   const materials = Array.isArray(model.material) ? model.material : [model.material];
   for (const [id, bucket] of buckets) {
     const geometry = geometryFor([...bucket].map(([materialIndex, indices]) => ({ materialIndex, indices })));
-    const mesh = new THREE.Mesh(geometry, materials.map(material => material.clone()));
+    const mesh = new THREE.Mesh(geometry, materials.map(material => {
+      const copy = material.clone();
+      copy.onBeforeCompile = material.onBeforeCompile;
+      copy.customProgramCacheKey = material.customProgramCacheKey;
+      return copy;
+    }));
     mesh.name = `Roof IFC ${id}`;
     mesh.position.copy(model.position);
     mesh.castShadow = true;

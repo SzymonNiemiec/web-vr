@@ -3,468 +3,343 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { IFCLoader } from 'web-ifc-three';
 import { extractRoof } from './roof.js';
-import { ENVIRONMENT_COLORS, getPathSegments } from './environment.js';
-import { getColorOverride, getMaterialOverride } from './materials.js';
+import { prepareModel, finishes } from './model.js';
+import { createWalkEnvironment } from './environment.js';
+import { blockAt } from './materials.js';
+import { buildFloors, createWalkControls } from './navigation.js';
 
-const IFC_FILE = new URL('../Projekt CZ.ifc', import.meta.url).href;
-
-// Exterior VR stops are positioned around the loaded model bounds.
-const TELEPORT_POINTS = [
-  { id: 'entrance', label: 'Widok pierwszy', position: [0, 1.65, 0] },
-  { id: 'hall', label: 'Widok drugi', position: [4, 1.65, -2] },
-  { id: 'room', label: 'Widok trzeci', position: [-3, 1.65, -4] }
-];
-
-const canvas = document.querySelector('#scene');
-const status = document.querySelector('#status');
-
+const $ = selector => document.querySelector(selector);
+const canvas = $('#scene');
+const stage = $('.stage');
 const scene = new THREE.Scene();
-scene.background = createSkyTexture();
-scene.fog = new THREE.Fog(0xd7dacf, 45, 160);
-
-const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.05, 1200);
-camera.position.set(7, 5, 9);
-
+scene.background = new THREE.Color('#e7e9e1');
+const camera = new THREE.PerspectiveCamera(45, 1, .04, 220);
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.xr.enabled = true;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.95;
+renderer.toneMappingExposure = 1;
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.autoUpdate = false;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-const vrButton = VRButton.createButton(renderer);
-document.querySelector('#vr-slot').appendChild(vrButton);
-new MutationObserver(() => {
-  if (/NOT SUPPORTED|NOT ALLOWED/.test(vrButton.textContent)) {
-    vrButton.hidden = true;
-    document.querySelector('#vr-slot').setAttribute('aria-label', 'Tryb VR dostępny na zgodnym urządzeniu');
-  }
-}).observe(vrButton, { childList: true, characterData: true, subtree: true });
-
 const rig = new THREE.Group();
 rig.add(camera);
 scene.add(rig);
-
-const controls = new OrbitControls(camera, renderer.domElement);
+const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
-controls.target.set(0, 1.2, 0);
+controls.minPolarAngle = .08;
+controls.maxPolarAngle = Math.PI / 2 - .03;
+scene.add(new THREE.HemisphereLight(0xfff8e9, 0xd3d6cd, 1.68));
+const sun = new THREE.DirectionalLight(0xfff2db, 2.18);
+sun.position.set(-16, 24, 13);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -17, right: 17, top: 17, bottom: -17, far: 75 });
+sun.shadow.camera.updateProjectionMatrix();
+sun.shadow.bias = -.0002;
+sun.shadow.normalBias = .012;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xddeaff, .7);
+fill.position.set(8, 12, -15);
+scene.add(fill);
 
-const ambientLight = new THREE.HemisphereLight(0xe5eff5, 0x7c795f, 1.7);
-scene.add(ambientLight);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(180,180), new THREE.ShadowMaterial({ opacity: .16 }));
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -.012;
+ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(42,42,0xb7bfb1,0xb7bfb1);
+grid.material.transparent = true;
+grid.material.opacity = .29;
+grid.position.y = -.02;
+scene.add(grid);
 
-const directionalLight = new THREE.DirectionalLight(0xffdfb2, 3.1);
-directionalLight.position.set(-16, 22, 14);
-directionalLight.castShadow = true;
-directionalLight.shadow.mapSize.set(2048, 2048);
-directionalLight.shadow.camera.near = 1;
-directionalLight.shadow.camera.far = 80;
-directionalLight.shadow.camera.left = -28;
-directionalLight.shadow.camera.right = 28;
-directionalLight.shadow.camera.top = 28;
-directionalLight.shadow.camera.bottom = -28;
-directionalLight.shadow.bias = -0.0002;
-directionalLight.shadow.normalBias = 0.035;
-directionalLight.shadow.radius = 3;
-scene.add(directionalLight);
+const surroundings = createWalkEnvironment(THREE);
+scene.add(surroundings);
+function showSurroundings(visible) {
+  surroundings.visible = visible;
+  grid.visible = !visible;
+  scene.fog = visible ? new THREE.FogExp2(0xdfe5da,.034) : null;
+}
 
-const fillLight = new THREE.DirectionalLight(0x8fb8ff, 0.75);
-fillLight.position.set(-10, 7, -12);
-scene.add(fillLight);
-
-createEnvironment();
-
-const markerGroup = new THREE.Group();
-scene.add(markerGroup);
-
-const raycaster = new THREE.Raycaster();
-const controller = renderer.xr.getController(0);
-controller.addEventListener('selectstart', onControllerSelect);
-rig.add(controller);
-
-const controllerLine = buildControllerLine();
-controller.add(controllerLine);
-
-const markerById = new Map();
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-let views = [];
-let transition = null;
-let tourStart = null;
-let activeView = 0;
-let roofParts = [];
-let roofProgress = 0;
-let roofOpacity = .35;
-let roofTransition = null;
-let buildingSize = new THREE.Vector3();
-const roofButton = document.querySelector('#roof-toggle');
-const roofSlider = document.querySelector('#roof-progress');
-roofButton.addEventListener('click', () => {
-  stopTour();
-  const open = roofProgress < .5;
-  goToView(open ? 1 : 0);
-});
-roofSlider.addEventListener('input', () => {
-  stopTour();
-  setRoof(Number(roofSlider.value) / 100, true);
-});
+const selection = { id: { value: -1 }, block: { value: new THREE.Vector3(0,0,-1) } };
+let model, products, floors = [], floorIndex = 0, views = [], roofParts = [];
+let transition = null, tourStart = null, activeView = 0;
+let roofProgress = 0, roofOpacity = .45, roofTransition = null;
 const tourDuration = 48000;
-const tourButton = document.querySelector('#tour');
-const tourState = document.querySelector('#tour-state');
-controls.minPolarAngle = 0.12;
-controls.maxPolarAngle = Math.PI / 2 - 0.025;
-controls.addEventListener('start', () => { stopTour(); transition = null; });
-document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => { stopTour(); goToView(Number(button.dataset.view)); }));
-document.querySelector('#home').addEventListener('click', () => { stopTour(); goToView(0); });
-tourButton.addEventListener('click', () => {
+const roofButton = $('#roof-toggle'), roofSlider = $('#roof-progress');
+const tourButton = $('#tour'), tourState = $('#tour-state');
+const tourPlayback = $('#tour-playback'), tourProgress = $('#tour-progress');
+const tourStep = $('#tour-step'), tourTime = $('#tour-time'), tourNext = $('#tour-next');
+const walk = createWalkControls(canvas, camera, leaveWalk);
+const picker = new THREE.Raycaster();
+let pickStart = null;
+let redraw = true;
+
+function clearSelection() {
+  redraw = true;
+  selection.id.value = -1;
+  $('#inspector').hidden = true;
+}
+function inspect(hit) {
+  redraw = true;
+  if (!hit) { clearSelection(); return; }
+  const id = hit.object.geometry.attributes.expressID.getX(hit.face.a);
+  const product = products.get(id);
+  if (!product) return;
+  const point = hit.object.worldToLocal(hit.point.clone());
+  const block = product.kind === 'wall' && blockAt(point, hit.face.normal);
+  selection.id.value = id;
+  selection.block.value.set(block?.column ?? 0, block?.row ?? 0, block ? block.axis : -1);
+  $('#selection-kind').textContent = finishes[product.kind].label + ' · IFC #' + id;
+  const name = product.name.replace(/:\d+(?::\d+)?$/, '').split(':').slice(-1)[0];
+  const frame = /wieniec/i.test(product.name) ? 'Wieniec' : product.type === 'IFCBEAM' ? 'Belka' : 'Słup';
+  $('#selection-title').textContent = block ? 'Bloczek ' + (block.axis ? 'Z' : 'X') + ' ' + block.column + ' / ' + block.row
+    : (product.kind === 'frame' ? frame + ' ' : '') + name;
+  $('#selection-info').textContent = block ? name + '. Pozycja w ilustracyjnym podziale muru (49 × 24 cm).' : product.type + ' · ' + product.name;
+  $('#inspector').hidden = false;
+}
+function pickables() { return [model, ...roofParts.filter(p => p.mesh.visible).map(p => p.mesh)]; }
+canvas.addEventListener('pointerdown', e => {
+  pickStart = e.isPrimary && e.button === 0 ? [e.clientX,e.clientY] : null;
+});
+canvas.addEventListener('pointercancel', () => { pickStart = null; });
+canvas.addEventListener('pointerup', e => {
+  if (!pickStart || !model || Math.hypot(e.clientX-pickStart[0], e.clientY-pickStart[1]) > 5) return;
+  pickStart = null;
+  const rect = canvas.getBoundingClientRect();
+  picker.setFromCamera({ x: (e.clientX-rect.left)/rect.width*2-1, y: 1-(e.clientY-rect.top)/rect.height*2 }, camera);
+  inspect(picker.intersectObjects(pickables(), false)[0]);
+});
+$('#clear-selection').onclick = clearSelection;
+controls.addEventListener('start', stopTour);
+roofButton.onclick = () => { stopTour(); goToView(roofProgress < .5 ? 1 : 0); };
+roofSlider.oninput = () => { stopTour(); setRoof(Number(roofSlider.value) / 100, true); };
+document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => { stopTour(); clearSelection(); goToView(Number(button.dataset.view)); });
+tourButton.onclick = () => {
   if (tourStart !== null) { stopTour(); return; }
-  if (renderer.xr.isPresenting) return;
+  clearSelection();
   tourStart = performance.now();
   tourButton.textContent = 'Zatrzymaj pokaz';
   tourButton.setAttribute('aria-pressed', 'true');
-  tourState.textContent = 'Prezentacja w toku';
+  tourState.textContent = 'Pokaz w toku';
   goToView(0);
-});
-document.querySelector('#fullscreen').addEventListener('click', async () => {
+  updateTourProgress(0);
+  tourPlayback.hidden = false;
+};
+$('#fullscreen').onclick = async () => {
   try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); }
-  catch { tourState.textContent = 'Pełny ekran jest niedostępny w tej przeglądarce'; }
-});
-document.addEventListener('fullscreenchange', () => { document.querySelector('#fullscreen').textContent = document.fullscreenElement ? 'Zamknij pełny ekran' : 'Pełny ekran'; });
-document.addEventListener('keydown', event => { if (event.key === 'Escape') stopTour(); });
-document.addEventListener('visibilitychange', () => { if (document.hidden) stopTour(); });
-document.querySelector('#retry').addEventListener('click', () => location.reload());
-renderer.xr.addEventListener('sessionstart', () => { stopTour(); setRoof(0, true); transition = null; controls.enabled = false; markerGroup.visible = true; camera.position.set(0, 0, 0); rig.position.set(TELEPORT_POINTS[0].position[0], 0, TELEPORT_POINTS[0].position[2]); });
-renderer.xr.addEventListener('sessionend', () => { markerGroup.visible = false; rig.position.set(0, 0, 0); controls.enabled = true; goToView(activeView, true); });
-loadIfcModel();
+  catch { tourState.textContent = 'Pełny ekran niedostępny'; }
+};
+document.addEventListener('fullscreenchange', () => { $('#fullscreen').textContent = document.fullscreenElement ? 'Zamknij pełny ekran' : 'Pełny ekran'; });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !walk.active) { stopTour(); clearSelection(); } });
+document.addEventListener('visibilitychange', () => { if (document.hidden && !walk.active) stopTour(); });
+$('#retry').onclick = () => location.reload();
+$('#walk').onclick = () => walk.active ? leaveWalk() : enterWalk(0);
 
-renderer.setAnimationLoop(() => {
-  updatePresentation(performance.now());
-  if (!renderer.xr.isPresenting) controls.update();
-  updateControllerTarget();
-  renderer.render(scene, camera);
-});
-
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+function enterWalk(index) {
+  stopTour();
+  clearSelection();
+  setRoof(0,true);
+  floorIndex = index;
+  controls.enabled = false;
+  camera.fov = 70;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  if (views.length && !renderer.xr.isPresenting) goToView(activeView, true);
-});
-
-function setStatus(message) {
-  status.textContent = message;
+  walk.enter(floors[index]);
+  showSurroundings(true);
+  $('#app').classList.add('walking');
+  $('#view-number').textContent = 'Spacer po domu';
+  $('#view-title').textContent = levelName(index);
+  tourState.textContent = 'Widok z wysokości oczu';
+  $('#hint').textContent = 'Przeciągnij obraz, aby się rozejrzeć';
+  $('#walk').textContent = '← Wróć do modelu';
+  $('#walk-options').hidden = $('.movement').hidden = false;
+  $('#orbit-options').hidden = tourButton.hidden = true;
+  document.querySelectorAll('#levels button').forEach((button,i) => button.setAttribute('aria-current', String(index === i)));
 }
-
-function createEnvironment() {
-  scene.add(createGrassPlane());
-
-  for (const segment of getPathSegments()) {
-    scene.add(createPathSegment(segment));
-  }
+function leaveWalk() {
+  walk.leave();
+  showSurroundings(false);
+  clearSelection();
+  controls.enabled = true;
+  camera.fov = 45;
+  camera.updateProjectionMatrix();
+  $('#app').classList.remove('walking');
+  $('#walk').innerHTML = 'Wejdź do środka <span aria-hidden="true">→</span>';
+  $('#walk-options').hidden = $('.movement').hidden = true;
+  $('#orbit-options').hidden = tourButton.hidden = false;
+  $('#hint').textContent = 'Przeciągnij, aby obrócić · Przewiń, aby przybliżyć';
+  stopTour();
+  goToView(0,true);
 }
+function levelName(index) { return index === 0 ? 'Parter' : 'Piętro ' + index; }
 
-function createSkyTexture() {
-  const skyCanvas = document.createElement('canvas');
-  skyCanvas.width = 1;
-  skyCanvas.height = 512;
-  const context = skyCanvas.getContext('2d');
-  const gradient = context.createLinearGradient(0, 0, 0, skyCanvas.height);
-
-  gradient.addColorStop(0, ENVIRONMENT_COLORS.skyTop);
-  gradient.addColorStop(0.52, ENVIRONMENT_COLORS.skyMiddle);
-  gradient.addColorStop(1, ENVIRONMENT_COLORS.skyBottom);
-
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, skyCanvas.width, skyCanvas.height);
-
-  const texture = new THREE.CanvasTexture(skyCanvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
-function createGrassPlane() {
-  const texture = createGrassTexture();
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(600, 600);
-  texture.colorSpace = THREE.SRGBColorSpace;
-
-  const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(2000, 2000),
-    new THREE.MeshStandardMaterial({
-      color: ENVIRONMENT_COLORS.grassBase,
-      map: texture,
-      roughness: 0.96,
-      metalness: 0
-    })
-  );
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = -0.018;
-  ground.receiveShadow = true;
-  return ground;
-}
-
-function createGrassTexture() {
-  const canvasTexture = document.createElement('canvas');
-  canvasTexture.width = 128;
-  canvasTexture.height = 128;
-  const context = canvasTexture.getContext('2d');
-
-  context.fillStyle = ENVIRONMENT_COLORS.grassBase;
-  context.fillRect(0, 0, canvasTexture.width, canvasTexture.height);
-
-  for (let i = 0; i < 900; i += 1) {
-    const x = Math.random() * canvasTexture.width;
-    const y = Math.random() * canvasTexture.height;
-    const length = 3 + Math.random() * 9;
-    const alpha = 0.18 + Math.random() * 0.22;
-
-    context.strokeStyle = `rgba(111, 159, 85, ${alpha})`;
-    context.beginPath();
-    context.moveTo(x, y);
-    context.lineTo(x + Math.random() * 2 - 1, y - length);
-    context.stroke();
-  }
-
-  return new THREE.CanvasTexture(canvasTexture);
-}
-
-function createPathSegment(segment) {
-  const path = new THREE.Mesh(
-    new THREE.PlaneGeometry(segment.scale[0], segment.scale[1]),
-    new THREE.MeshStandardMaterial({
-      color: ENVIRONMENT_COLORS.path,
-      roughness: 0.92,
-      metalness: 0
-    })
-  );
-  path.rotation.x = -Math.PI / 2;
-  path.position.fromArray(segment.position);
-  path.receiveShadow = true;
-  return path;
-}
-
-async function loadIfcModel() {
-  setStatus('Ładuję model IFC...');
-
-  const loader = new IFCLoader();
-  loader.ifcManager.setWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.46/');
-
-  let ifcText;
+async function load() {
   try {
-    const response = await fetch(IFC_FILE);
-    if (!response.ok) throw new Error('IFC unavailable');
-    ifcText = await response.text();
-  } catch (error) {
-    setStatus('Nie udało się wczytać projektu. Spróbuj ponownie.');
-    document.querySelector('#retry').hidden = false;
-    return;
-  }
-  loader.load(
-    IFC_FILE,
-    (model) => {
-      model.name = 'Projekt CZ IFC';
-      applyModelVisuals(model);
-      scene.add(model);
-      frameObject(model);
-      roofParts = extractRoof(model, ifcText);
-      for (const part of roofParts) {
-        scene.add(part.mesh);
-        const direction = part.center.clone();
-        direction.y = 0;
-        if (direction.lengthSq() < .01) direction.set(1, 0, 0);
-        part.offset = direction.normalize().multiplyScalar(Math.max(buildingSize.x, buildingSize.z) * .42);
-        part.offset.y = buildingSize.y * .55;
-      }
-      roofButton.disabled = roofSlider.disabled = roofParts.length === 0;
-      if (!roofParts.length) document.querySelector('#roof-controls').hidden = true;
-      setStatus('Projekt gotowy.');
-      document.querySelector('#intro').classList.add('ready');
-      document.querySelectorAll('[data-view], #tour, #home').forEach(button => button.disabled = false);
-    },
-    (event) => {
-      if (!event.total) return;
-      const progress = Math.round((event.loaded / event.total) * 100);
-      setStatus(`Ładuję model IFC... ${progress}%`);
-    },
-    (error) => {
-      console.error(error);
-      setStatus('Nie udało się wczytać projektu. Sprawdź połączenie i spróbuj ponownie.');
-      document.querySelector('#retry').hidden = false;
+    const loader = new IFCLoader();
+    await loader.ifcManager.setWasmPath('https://cdn.jsdelivr.net/npm/web-ifc@0.0.46/');
+    $('#status').textContent = 'Wczytuję konstrukcję IFC…';
+    const response = await fetch(new URL('../Projekt CZ.ifc', import.meta.url));
+    if (!response.ok) throw Error('IFC ' + response.status);
+    model = await loader.parse(await response.arrayBuffer());
+    products = prepareModel(model, loader.ifcManager, selection);
+    scene.add(model);
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
+    model.position.set(-center.x,-box.min.y,-center.z);
+    floors = buildFloors(model, products);
+    roofParts = extractRoof(model, products);
+    for (const part of roofParts) {
+      scene.add(part.mesh);
+      part.offset = part.center.clone().setY(0).normalize().multiplyScalar(Math.max(size.x,size.z)*.38);
+      part.offset.y = size.y * .55;
     }
-  );
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(model.geometry, 32),
+      new THREE.LineBasicMaterial({ color:0x4e463a, transparent:true, opacity:.24 }));
+    model.add(edges);
+    const target = [0,size.y*.45,0], radius = Math.hypot(size.x,size.z)*.5;
+    views = [
+      {title:'Cały budynek', direction:[1,.33,.88], target, roof:0},
+      {title:'Otwarty dach', direction:[1,.94,.83], target:[0,size.y*.72,0], roof:1, zoom:1.24},
+      {title:'Układ piętra', direction:[-.22,2,.24], target, roof:1},
+      {title:'Druga elewacja', direction:[-1,.48,-1], target, roof:0}
+    ];
+    for (const view of views) view.radius = radius;
+    controls.minDistance = 1.4; controls.maxDistance = radius*7;
+    floors.forEach((_,index) => {
+      const button = document.createElement('button');
+      button.textContent = levelName(index);
+      button.onclick = () => enterWalk(index);
+      $('#levels').append(button);
+    });
+    $('#walk').disabled = !floors.length;
+    $('#roof-controls').hidden = !roofParts.length;
+    roofButton.disabled = roofSlider.disabled = !roofParts.length;
+    document.querySelectorAll('[data-view], #tour').forEach(button => button.disabled = false);
+    stopTour();
+    goToView(0,true);
+    $('#intro').classList.add('ready');
+    if (floors.length) setupVR(size);
+  } catch (error) {
+    console.error(error);
+    $('#status').textContent = 'Nie udało się wczytać modelu. Sprawdź połączenie.';
+    $('#retry').hidden = false;
+  }
 }
 
-function applyModelVisuals(model) {
-  model.traverse((child) => {
-    if (!child.isMesh) return;
-
-    child.castShadow = true;
-    child.receiveShadow = true;
-    child.material = applyMaterialVisuals(child.material);
+const xrControllers = [];
+const xrRay = new THREE.Raycaster();
+function teleport(level, x, z) {
+  const head = renderer.xr.getCamera().getWorldPosition(new THREE.Vector3());
+  rig.position.x += x - head.x;
+  rig.position.z += z - head.z;
+  rig.position.y = level.y;
+}
+let exterior;
+function setupVR(size) {
+  exterior = {
+    y:0, spawn:{x:size.x/2+3,z:size.z/2+3},
+    canStand:(x,z) => Math.max(Math.abs(x),Math.abs(z)) < 22 && (Math.abs(x)>size.x/2+.25 || Math.abs(z)>size.z/2+.25)
+  };
+  if (!navigator.xr) return;
+  navigator.xr.isSessionSupported('immersive-vr').then(supported => {
+    if (!supported) return;
+    const slot = $('#vr-slot');
+    const button = VRButton.createButton(renderer);
+    button.title = 'Spust przenosi na wskazaną podłogę. Przycisk chwytu zmienia kondygnację lub przenosi przed budynek.';
+    slot.append(button);
+    $('#vr-help').hidden = false;
+    slot.hidden = false;
+  }).catch(() => {});
+  for (let i=0; i<2; i++) {
+    const controller = renderer.xr.getController(i);
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(0,0,-1)]),
+      new THREE.LineBasicMaterial({ color:0x86bba5 }));
+    controller.add(line);
+    rig.add(controller);
+    xrControllers.push({controller,line});
+    controller.addEventListener('selectstart', () => {
+      const dest = xrDestination(controller);
+      if (dest) { floorIndex = floors.indexOf(dest.level); teleport(dest.level,dest.point.x,dest.point.z); }
+    });
+    controller.addEventListener('squeezestart', () => {
+      floorIndex = floorIndex + 1 < floors.length ? floorIndex + 1 : -1;
+      const level = floors[floorIndex] ?? exterior;
+      teleport(level,level.spawn.x,level.spawn.z);
+    });
+  }
+  renderer.xr.addEventListener('sessionstart', () => {
+    if (walk.active) leaveWalk();
+    stopTour(); clearSelection(); setRoof(0,true);
+    floorIndex = 0;
+    showSurroundings(true);
+    controls.enabled = false;
+    camera.position.set(0,0,0);
+    camera.rotation.set(0,0,0);
+    const spawn = floors[0].spawn;
+    rig.position.set(spawn.x,spawn.y,spawn.z);
+    rig.rotation.y = spawn.yaw;
+  });
+  renderer.xr.addEventListener('sessionend', () => {
+    rig.position.set(0,0,0); rig.rotation.set(0,0,0);
+    leaveWalk();
   });
 }
-
-function applyMaterialVisuals(material) {
-  if (Array.isArray(material)) {
-    return material.map(applySingleMaterialVisuals);
-  }
-
-  return applySingleMaterialVisuals(material);
+function xrDestination(controller) {
+  xrRay.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+  xrRay.ray.direction.set(0,0,-1).transformDirection(controller.matrixWorld);
+  xrRay.far = 12;
+  const hit = xrRay.intersectObjects([...pickables(),ground],false)[0];
+  if (!hit) return null;
+  if (hit.object === ground) return exterior.canStand(hit.point.x,hit.point.z) ? {level:exterior,point:hit.point,distance:hit.distance} : null;
+  if (hit.face.normal.y < .8) return null;
+  const level = floors.find(level => Math.abs(hit.point.y-level.y)<.035 && level.canStand(hit.point.x, hit.point.z));
+  if (!level) return null;
+  return { level, point:hit.point, distance:hit.distance };
 }
-
-function applySingleMaterialVisuals(material) {
-  const visualMaterial = new THREE.MeshStandardMaterial({
-    name: material.name,
-    color: material.color?.clone() || new THREE.Color(0xd9d3c7),
-    map: material.map || null,
-    side: material.side,
-    transparent: material.transparent,
-    opacity: material.opacity,
-    depthWrite: material.depthWrite,
-    vertexColors: material.vertexColors,
-    roughness: 0.82,
-    metalness: 0
-  });
-  const originalColor = `#${visualMaterial.color.getHexString()}`;
-  const override = getMaterialOverride(visualMaterial.name) || getColorOverride(originalColor);
-
-  visualMaterial.roughness = override?.roughness ?? 0.82;
-  visualMaterial.metalness = override?.metalness ?? 0;
-
-  if (override?.color) {
-    visualMaterial.color.set(override.color);
+function resize() {
+  const width = stage.clientWidth, height = stage.clientHeight;
+  if (!width || !height || renderer.xr.isPresenting) return;
+  const aspect = width / height;
+  if (views.length && !walk.active && !transition) {
+    const scale = Math.min(1,camera.aspect) / Math.min(1,aspect);
+    camera.position.sub(controls.target).multiplyScalar(scale).add(controls.target);
   }
-
-  return visualMaterial;
-}
-
-function frameObject(object) {
-  const box = new THREE.Box3().setFromObject(object);
-  const size = box.getSize(new THREE.Vector3());
-  buildingSize.copy(size);
-  const center = box.getCenter(new THREE.Vector3());
-  const maxSize = Math.max(size.x, size.y, size.z);
-
-  object.position.set(-center.x, -box.min.y, -center.z);
-  const radius = Math.hypot(size.x, size.z) / 2;
-  const targetY = size.y * 0.38;
-  const target = [0, targetY, 0];
-  views = [
-    { title: 'Pierwsze spojrzenie', description: 'Jedna bryła. Wiele perspektyw.', direction: [-1, .65, -1], target, roof: 0 },
-    { title: 'Otwieramy dom', description: 'Połacie dachu unoszą się, odsłaniając konstrukcję.', direction: [-1, 1.05, -1], target: [0, size.y * .55, 0], roof: 1, zoom: 1.22 },
-    { title: 'Zajrzyj do środka', description: 'Układ przestrzeni pod dachem — z lotu ptaka.', direction: [-.32, 1.8, -.42], target, roof: 1, zoom: 1.08 },
-    { title: 'Wszystko na swoim miejscu', description: 'Elementy wracają do wspólnej formy.', direction: [1, .65, -1], target, roof: 0 }
-  ];
-  for (const view of views) view.radius = radius;
-  TELEPORT_POINTS[0].position = [size.x / 2 + 3, 1.65, size.z / 2 + 3];
-  TELEPORT_POINTS[1].position = [-size.x / 2 - 3, 1.65, size.z / 2 + 3];
-  TELEPORT_POINTS[2].position = [-size.x / 2 - 3, 1.65, -size.z / 2 - 3];
-  createTeleportMarkers();
-  markerGroup.visible = false;
-  controls.minDistance = radius * .65;
-  controls.maxDistance = radius * 6;
-  camera.near = 0.05;
-  camera.far = Math.max(maxSize * 12, 200);
+  redraw = true;
+  camera.aspect = aspect;
   camera.updateProjectionMatrix();
-  goToView(0, true);
+  renderer.setSize(width,height,false);
+
 }
-
-function createTeleportMarkers() {
-  const ringGeometry = new THREE.TorusGeometry(0.45, 0.035, 12, 48);
-  const discGeometry = new THREE.CircleGeometry(0.38, 48);
-  const ringMaterial = new THREE.MeshStandardMaterial({
-    color: 0x58a6ff,
-    emissive: 0x0a4c9a,
-    roughness: 0.45
-  });
-  const discMaterial = new THREE.MeshBasicMaterial({
-    color: 0x58a6ff,
-    transparent: true,
-    opacity: 0.18,
-    side: THREE.DoubleSide
-  });
-
-  for (const point of TELEPORT_POINTS) {
-    const marker = new THREE.Group();
-    marker.name = point.label;
-    marker.userData.teleportId = point.id;
-    marker.position.fromArray(point.position);
-    marker.position.y = 0.03;
-
-    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
-    ring.rotation.x = Math.PI / 2;
-    ring.userData.teleportId = point.id;
-
-    const disc = new THREE.Mesh(discGeometry, discMaterial);
-    disc.rotation.x = -Math.PI / 2;
-    disc.userData.teleportId = point.id;
-
-    marker.add(ring, disc);
-    markerGroup.add(marker);
-    markerById.set(point.id, marker);
-  }
-}
-
-function teleportTo(id) {
-  const point = TELEPORT_POINTS.find((candidate) => candidate.id === id);
-  if (!point) return;
-
+new ResizeObserver(resize).observe(stage);
+resize();
+let lastFrame = 0;
+renderer.setAnimationLoop(now => {
+  const dt = Math.min(Math.max(0,(now-lastFrame)/1000),.05);
+  lastFrame = now;
   if (renderer.xr.isPresenting) {
-    rig.position.set(point.position[0], 0, point.position[2]);
-  } else {
-    rig.position.set(0, 0, 0);
-    camera.position.set(point.position[0] + 5, point.position[1] + 2.2, point.position[2] + 5);
-    controls.target.set(point.position[0], point.position[1], point.position[2]);
-    controls.update();
+    for (const {controller,line} of xrControllers) {
+      if (!controller.visible) continue;
+      const dest = xrDestination(controller);
+      line.scale.z = dest?.distance ?? 1.4;
+      line.material.color.setHex(dest ? 0x48d7a8 : 0x81958e);
+    }
+  } else if (walk.active) walk.update(dt);
+  else {
+    updatePresentation(now);
+    const moved = controls.update();
+    if (!redraw && !moved) return;
   }
-}
-
-function buildControllerLine() {
-  const geometry = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3(0, 0, -6)
-  ]);
-  const material = new THREE.LineBasicMaterial({ color: 0x58a6ff });
-  const line = new THREE.Line(geometry, material);
-  line.name = 'Teleport pointer';
-  line.scale.z = 1;
-  return line;
-}
-
-function onControllerSelect() {
-  const marker = getControllerIntersection();
-  if (marker?.object?.userData?.teleportId) {
-    teleportTo(marker.object.userData.teleportId);
-  }
-}
-
-function updateControllerTarget() {
-  if (!renderer.xr.isPresenting) return;
-
-  const hit = getControllerIntersection();
-  for (const marker of markerById.values()) {
-    marker.scale.setScalar(1);
-  }
-
-  if (hit?.object?.userData?.teleportId) {
-    const marker = markerById.get(hit.object.userData.teleportId);
-    marker?.scale.setScalar(1.25);
-  }
-}
-
-function getControllerIntersection() {
-  const tempMatrix = new THREE.Matrix4();
-  tempMatrix.identity().extractRotation(controller.matrixWorld);
-  raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
-  return raycaster.intersectObjects(markerGroup.children, true)[0] || null;
-}
-
+  renderer.render(scene,camera);
+  redraw = false;
+});
+load();
 function viewPosition(view) {
   const vertical = THREE.MathUtils.degToRad(camera.fov / 2);
   const horizontal = Math.atan(Math.tan(vertical) * camera.aspect);
-  const distance = view.radius / Math.sin(Math.min(vertical, horizontal)) * 1.25 * (view.zoom || 1);
+  const distance = view.radius / Math.sin(Math.min(vertical, horizontal)) * 1.08 * (view.zoom || 1);
   return new THREE.Vector3(...view.direction).normalize().multiplyScalar(distance).add(new THREE.Vector3(...view.target));
 }
 function goToView(index, immediate = false) {
@@ -477,33 +352,42 @@ function goToView(index, immediate = false) {
   controls.update();
   transition = { start: performance.now(), from: camera.position.clone(), targetFrom: controls.target.clone(), to: destination, target, duration: reducedMotion.matches ? 0 : 2200 };
   if (immediate || reducedMotion.matches) { camera.position.copy(destination); controls.target.copy(target); transition = null; controls.update(); }
-  document.querySelector('#view-number').textContent = `0${index + 1} / 04`;
+  document.querySelector('#view-number').textContent = index === 2 ? 'Widok konstrukcji' : 'Widok zewnętrzny';
   document.querySelector('#view-title').textContent = view.title;
-  document.querySelector('#view-description').textContent = view.description;
+
   document.querySelectorAll('[data-view]').forEach(button => button.setAttribute('aria-current', String(Number(button.dataset.view) === index)));
 }
 function stopTour() {
   tourStart = null;
   roofTransition = null;
   transition = null;
-  tourButton.textContent = 'Poznaj dom →';
+  tourButton.textContent = 'Uruchom pokaz';
   tourButton.setAttribute('aria-pressed', 'false');
-  tourState.textContent = 'Swobodne odkrywanie';
-  document.querySelector('#progress').style.width = '0%';
-  document.querySelector('.tour-progress').setAttribute('aria-valuenow', '0');
+  tourState.textContent = 'Widok modelu';
+  tourPlayback.hidden = true;
+}
+function updateTourProgress(elapsed) {
+  tourProgress.value = 100 * elapsed / tourDuration;
+  const seconds = Math.floor(elapsed / 1000);
+  const time = `${seconds} / ${tourDuration / 1000} s`;
+  if (tourTime.textContent === time) return;
+  tourTime.textContent = time;
+  tourStep.textContent = `Ujęcie ${activeView + 1} z ${views.length}`;
+  const stageEnd = (activeView + 1) * tourDuration / views.length;
+  const remaining = Math.ceil((stageEnd - elapsed) / 1000);
+  const next = views[activeView + 1];
+  tourNext.textContent = next ? `Za ${remaining} s · ${next.title}` : `Koniec pokazu za ${remaining} s`;
 }
 function updatePresentation(now) {
-  if (renderer.xr.isPresenting) return;
+  if (renderer.xr.isPresenting || walk.active) return;
   updateRoof(now);
   if (tourStart !== null) {
-    const elapsed = now - tourStart;
+    const elapsed = Math.max(0, now - tourStart);
     if (elapsed >= tourDuration) { stopTour(); goToView(0); }
     else {
       const next = Math.floor(elapsed / (tourDuration / views.length));
       if (next !== activeView) goToView(next);
-      const percent = elapsed / tourDuration * 100;
-      document.querySelector('#progress').style.width = `${percent}%`;
-      document.querySelector('.tour-progress').setAttribute('aria-valuenow', String(Math.round(percent)));
+      updateTourProgress(elapsed);
     }
   }
   if (transition) {
@@ -540,6 +424,8 @@ function updateRoof(now) {
   if (t === 1) roofTransition = null;
 }
 function applyRoof() {
+  redraw = true;
+  renderer.shadowMap.needsUpdate = true;
   for (const part of roofParts) {
     part.mesh.position.copy(part.origin).addScaledVector(part.offset, roofProgress);
     for (const material of part.mesh.material) {
